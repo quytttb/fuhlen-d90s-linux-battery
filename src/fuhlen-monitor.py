@@ -40,6 +40,7 @@ def find_mouse_event_device():
 
 def read_battery():
     dev = None
+    needs_reattach = False
     try:
         # Reset device object each time to avoid stale handle
         dev = usb.core.find(idVendor=VID, idProduct=PID)
@@ -47,8 +48,16 @@ def read_battery():
 
         # Detach kernel driver if active
         if dev.is_kernel_driver_active(0):
-            try: dev.detach_kernel_driver(0)
+            try: 
+                dev.detach_kernel_driver(0)
+                needs_reattach = True
             except usb.core.USBError: pass
+        else:
+            # If not active, assume we might need to reattach it later anyway 
+            # to ensure it's in a good state, or maybe it was already detached by a previous failed run.
+            # But be careful not to attach if it wasn't supposed to be attached?
+            # For a mouse, it SHOULD be attached.
+            needs_reattach = True
 
         # Claim interface
         try:
@@ -72,23 +81,20 @@ def read_battery():
                     break
             except usb.core.USBError: pass
             time.sleep(0.05)
-
-        # Clean up
-        try:
-            usb.util.dispose_resources(dev)
-        except: pass
-        
-        try: 
-            if dev: dev.attach_kernel_driver(0)
-        except: pass
         
         return bat
     except Exception as e:
         return None
     finally:
         if dev:
+            # Release the interface first
             try: usb.util.dispose_resources(dev)
             except: pass
+            
+            # Re-attach kernel driver if needed
+            if needs_reattach:
+                try: dev.attach_kernel_driver(0)
+                except: pass
 
 def update_output(bat, history, max_history=5):
     final_bat = None
