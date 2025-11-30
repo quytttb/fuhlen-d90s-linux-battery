@@ -66,19 +66,37 @@ def read_battery():
             except: pass
 
 def main():
+    history = []
+    MAX_HISTORY = 5
+
     while True:
         try:
             bat = read_battery()
             
+            final_bat = None
+
+            if bat is not None:
+                history.append(bat)
+                if len(history) > MAX_HISTORY:
+                    history.pop(0)
+                
+                # Calculate average to smooth out fluctuations
+                if history:
+                    final_bat = int(round(sum(history) / len(history)))
+            else:
+                # Device disconnected, clear history
+                history = []
+                final_bat = None
+            
             # 1. Ghi file text đơn giản (cho Executor)
-            status_text = f"{bat}%" if bat is not None else "N/A"
+            status_text = f"{final_bat}%" if final_bat is not None else "N/A"
             try:
                 with open(OUTPUT_FILE, "w") as f:
                     f.write(status_text)
             except IOError: pass
                 
             # 2. Ghi file JSON (cho script nâng cao)
-            data = {"percentage": bat if bat is not None else 0, "is_present": bat is not None}
+            data = {"percentage": final_bat if final_bat is not None else 0, "is_present": final_bat is not None}
             try:
                 with open(JSON_FILE, "w") as f:
                     json.dump(data, f)
