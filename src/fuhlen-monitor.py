@@ -18,24 +18,45 @@ IDLE_THRESHOLD_LIGHT = 30   # Seconds to wait before reading (Light Sleep)
 IDLE_THRESHOLD_DEEP = 150   # Seconds to stop reading (Deep Sleep)
 FORCE_READ_INTERVAL = 900   # Seconds (15 mins) to force read if active continuously
 MIN_READ_INTERVAL = 300     # Seconds (5 mins) minimum between reads
+NA_DEBOUNCE_COUNT = 3       # Number of consecutive failures before showing N/A
+
+# Global cache for device path
+_cached_event_path = None
 
 def find_mouse_event_device():
     """Find the /dev/input/eventX device corresponding to the mouse."""
+    global _cached_event_path
+    
+    # Check if cached path is still valid
+    if _cached_event_path and os.path.exists(_cached_event_path):
+        return _cached_event_path
+        
     # Look for devices with matching VID/PID in sysfs
     # Pattern: /sys/class/input/event*/device/id/vendor
     for ev in glob.glob("/sys/class/input/event*"):
         try:
-            with open(os.path.join(ev, "device/id/vendor"), "r") as f:
+            # Check if path exists before opening to avoid race condition
+            vendor_path = os.path.join(ev, "device/id/vendor")
+            product_path = os.path.join(ev, "device/id/product")
+            
+            if not (os.path.exists(vendor_path) and os.path.exists(product_path)):
+                continue
+                
+            with open(vendor_path, "r") as f:
                 vendor = int(f.read().strip(), 16)
-            with open(os.path.join(ev, "device/id/product"), "r") as f:
+            with open(product_path, "r") as f:
                 product = int(f.read().strip(), 16)
             
             if vendor == VID and product == PID:
                 # Found it! Return /dev/input/eventX
                 dev_name = os.path.basename(ev)
-                return f"/dev/input/{dev_name}"
+                _cached_event_path = f"/dev/input/{dev_name}"
+                print(f"Device found at: {_cached_event_path}")
+                return _cached_event_path
         except (IOError, ValueError):
             continue
+            
+    _cached_event_path = None
     return None
 
 def read_battery():
@@ -96,29 +117,53 @@ def read_battery():
                 try: dev.attach_kernel_driver(0)
                 except: pass
 
-def update_output(bat, history, max_history=5):
+def update_output(bat, history, max_history=5, na_counter=0):
     final_bat = None
+    
+    # Logic to handle N/A debounce
     if bat is not None:
+        # Reset NA counter externally if needed, but here we just process valid data
         history.append(bat)
         if len(history) > max_history:
             history.pop(0)
         if history:
             final_bat = int(round(sum(history) / len(history)))
     else:
-        history.clear()
-        final_bat = None
+        # If bat is None (read failed), we don't clear history immediately
+        # We only return None for final_bat if we really want to show N/A
+        # But the caller handles the debounce logic.
+        # Here we just return the last known good value if history exists
+        if history:
+             final_bat = int(round(sum(history) / len(history)))
+        else:
+             final_bat = None
+
+    # Only write if value changed or file doesn't exist
+    current_text = f"{final_bat}%" if final_bat is not None else "N/A"
     
-    status_text = f"{final_bat}%" if final_bat is not None else "N/A"
-    try:
-        with open(OUTPUT_FILE, "w") as f:
-            f.write(status_text)
-    except IOError: pass
+    should_write = True
+    if os.path.exists(OUTPUT_FILE):
+        try:
+            with open(OUTPUT_FILE, "r") as f:
+                if f.read().strip() == current_text:
+                    should_write = False
+        except: pass
+    
+    if should_write:
+        try:
+            with open(OUTPUT_FILE, "w") as f:
+                f.write(current_text)
+        except IOError: pass
         
-    data = {"percentage": final_bat if final_bat is not None else 0, "is_present": final_bat is not None}
-    try:
-        with open(JSON_FILE, "w") as f:
-            json.dump(data, f)
-    except IOError: pass
+    # JSON update (always update timestamp or similar if we had one, but here just value)
+    # To save IO, we can also skip JSON write if value same
+    # But for simplicity let's keep JSON sync with text
+    if should_write:
+        data = {"percentage": final_bat if final_bat is not None else 0, "is_present": final_bat is not None}
+        try:
+            with open(JSON_FILE, "w") as f:
+                json.dump(data, f)
+        except IOError: pass
     
     return history
 
@@ -126,6 +171,7 @@ def main():
     history = []
     last_read_time = 0
     last_activity_time = time.time()
+    na_failure_count = 0 # Counter for consecutive failures
     
     # Try to load last known value to show something immediately
     try:
@@ -196,6 +242,7 @@ def main():
         # Logic:
         # A. Startup or New Connection -> Force Read Immediately
         if (last_read_time == 0) or (event_path and (event_path != last_known_event_path)):
+            print(f"New connection detected or startup. Event path: {event_path}")
             should_read = True
             if event_path:
                 last_known_event_path = event_path
@@ -215,16 +262,40 @@ def main():
         # 3. Execute Read if needed
         if should_read:
             bat = read_battery()
-            history = update_output(bat, history)
+            
+            if bat is None:
+                na_failure_count += 1
+            else:
+                na_failure_count = 0 # Reset on success
+            
+            # Only clear history (show N/A) if failed multiple times
+            if bat is None and na_failure_count < NA_DEBOUNCE_COUNT:
+                # Keep old history, don't update output yet (or update with old value)
+                # We just skip update_output to keep file as is
+                pass 
+            elif bat is None and na_failure_count >= NA_DEBOUNCE_COUNT:
+                # Real failure, clear history
+                history.clear()
+                update_output(None, history)
+            else:
+                # Success
+                history = update_output(bat, history)
+                
             last_read_time = time.time()
-            # Reset activity time slightly to avoid double-reading immediately
-            # (though MIN_READ_INTERVAL handles this too)
         
         # 4. If device is gone (bat is None), update output to N/A periodically
         if event_path is None and time_since_last_read > 10:
              # Try reading to confirm it's really gone
              bat = read_battery()
-             history = update_output(bat, history)
+             if bat is None:
+                 na_failure_count += 1
+                 if na_failure_count >= NA_DEBOUNCE_COUNT:
+                     history.clear()
+                     update_output(None, history)
+             else:
+                 na_failure_count = 0
+                 history = update_output(bat, history)
+                 
              last_read_time = time.time()
 
         time.sleep(1) # Check every second
