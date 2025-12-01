@@ -127,7 +127,21 @@ def main():
     last_read_time = 0
     last_activity_time = time.time()
     
+    # Try to load last known value to show something immediately
+    try:
+        if os.path.exists(JSON_FILE):
+            with open(JSON_FILE, 'r') as f:
+                d = json.load(f)
+                if d.get('percentage') and d.get('is_present'):
+                    start_bat = int(d['percentage'])
+                    history.append(start_bat)
+                    # Also write to text file to ensure executor sees it if it restarted
+                    with open(OUTPUT_FILE, 'w') as f_out:
+                        f_out.write(f"{start_bat}%")
+    except: pass
+    
     event_path = find_mouse_event_device()
+    last_known_event_path = None # Track to detect reconnection
     event_file = None
     
     print(f"Monitoring started. Mouse event device: {event_path}")
@@ -180,17 +194,22 @@ def main():
         should_read = False
         
         # Logic:
-        # A. Light Sleep (Idle > 30s) AND (Not read recently) -> READ (Best time!)
-        if (idle_time > IDLE_THRESHOLD_LIGHT) and (idle_time < IDLE_THRESHOLD_DEEP):
+        # A. New Connection -> Force Read Immediately
+        if event_path and (event_path != last_known_event_path):
+            should_read = True
+            last_known_event_path = event_path
+            
+        # B. Light Sleep (Idle > 30s) AND (Not read recently) -> READ (Best time!)
+        elif (idle_time > IDLE_THRESHOLD_LIGHT) and (idle_time < IDLE_THRESHOLD_DEEP):
             if time_since_last_read > MIN_READ_INTERVAL:
                 should_read = True
                 
-        # B. Force Read (Active for too long) -> READ (Accept lag)
+        # C. Force Read (Active for too long) -> READ (Accept lag)
         elif (idle_time < 1.0): # Active
             if time_since_last_read > FORCE_READ_INTERVAL:
                 should_read = True
                 
-        # C. Deep Sleep (Idle > 150s) -> DO NOTHING
+        # D. Deep Sleep (Idle > 150s) -> DO NOTHING
         
         # 3. Execute Read if needed
         if should_read:
