@@ -194,10 +194,11 @@ def main():
         should_read = False
         
         # Logic:
-        # A. New Connection -> Force Read Immediately
-        if event_path and (event_path != last_known_event_path):
+        # A. Startup or New Connection -> Force Read Immediately
+        if (last_read_time == 0) or (event_path and (event_path != last_known_event_path)):
             should_read = True
-            last_known_event_path = event_path
+            if event_path:
+                last_known_event_path = event_path
             
         # B. Light Sleep (Idle > 30s) AND (Not read recently) -> READ (Best time!)
         elif (idle_time > IDLE_THRESHOLD_LIGHT) and (idle_time < IDLE_THRESHOLD_DEEP):
