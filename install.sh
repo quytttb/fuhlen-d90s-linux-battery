@@ -18,13 +18,18 @@ sudo cp src/fuhlen-monitor.py /usr/local/bin/fuhlen-monitor.py
 sudo chmod 755 /usr/local/bin/fuhlen-monitor.py
 
 # 3. Install Systemd Service
-echo "[3/4] Installing systemd service..."
+echo "[3/5] Installing systemd service..."
 sudo cp systemd/fuhlen-monitor.service /etc/systemd/system/fuhlen-monitor.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now fuhlen-monitor.service
 
-# 4. Install Frontend Script
-echo "[4/4] Installing frontend script..."
+# 4. Install system-sleep hook to restart service after resume
+echo "[4/5] Installing system-sleep hook..."
+sudo cp systemd/system-sleep/fuhlen-monitor /lib/systemd/system-sleep/fuhlen-monitor
+sudo chmod 755 /lib/systemd/system-sleep/fuhlen-monitor
+
+# 5. Install Frontend Script
+echo "[5/5] Installing frontend script..."
 # Copy to user's home directory to make it easy to reference in Executor
 cp src/fuhlen-icon.sh "$HOME/fuhlen-icon.sh"
 chmod +x "$HOME/fuhlen-icon.sh"

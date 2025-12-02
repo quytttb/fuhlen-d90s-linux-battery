@@ -36,8 +36,8 @@ chmod +x install.sh
 This script will:
 *   Install necessary Python dependencies (`python3-usb`).
 *   Copy the backend script to `/usr/local/bin/`.
+*   Install the systemd service and a **system-sleep hook** that automatically restarts the service after suspend/resume, ensuring the receiver hotplug is detected.
 *   Copy the icon script to your home directory (`~/fuhlen-icon.sh`).
-*   Install and enable the systemd service.
 
 ### 3. Configure Executor Extension
 1.  Open **Executor** settings in GNOME Extensions.

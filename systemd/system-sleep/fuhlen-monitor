@@ -1,0 +1,7 @@
+#!/bin/bash
+# Restart the monitor service after resume to ensure fresh device detection
+case "$1" in
+    post)
+        /bin/systemctl restart fuhlen-monitor.service
+        ;;
+esac
