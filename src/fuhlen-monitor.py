@@ -20,16 +20,25 @@ FORCE_READ_INTERVAL = 900   # Seconds (15 mins) to force read if active continuo
 MIN_READ_INTERVAL = 300     # Seconds (5 mins) minimum between reads
 NA_DEBOUNCE_COUNT = 3       # Number of consecutive failures before showing N/A
 
-# Global cache for device path
-_cached_event_path = None
+# Global cache for device path + signature
+_cached_event_info = (None, None)
+
+def _build_device_signature(ev_path):
+    """Create a signature that changes across unplug/replug events."""
+    try:
+        real_dev_path = os.path.realpath(os.path.join(ev_path, "device"))
+        return real_dev_path
+    except Exception:
+        return None
 
 def find_mouse_event_device():
     """Find the /dev/input/eventX device corresponding to the mouse."""
-    global _cached_event_path
+    global _cached_event_info
+    cached_path, cached_sig = _cached_event_info
     
     # Check if cached path is still valid
-    if _cached_event_path and os.path.exists(_cached_event_path):
-        return _cached_event_path
+    if cached_path and os.path.exists(cached_path):
+        return _cached_event_info
         
     # Look for devices with matching VID/PID in sysfs
     # Pattern: /sys/class/input/event*/device/id/vendor
@@ -48,16 +57,18 @@ def find_mouse_event_device():
                 product = int(f.read().strip(), 16)
             
             if vendor == VID and product == PID:
-                # Found it! Return /dev/input/eventX
+                # Found it! Return /dev/input/eventX along with a unique signature
                 dev_name = os.path.basename(ev)
-                _cached_event_path = f"/dev/input/{dev_name}"
-                print(f"Device found at: {_cached_event_path}")
-                return _cached_event_path
+                device_signature = _build_device_signature(ev)
+                event_path = f"/dev/input/{dev_name}"
+                _cached_event_info = (event_path, device_signature)
+                print(f"Device found at: {event_path} (signature={device_signature})")
+                return _cached_event_info
         except (IOError, ValueError):
             continue
             
-    _cached_event_path = None
-    return None
+    _cached_event_info = (None, None)
+    return _cached_event_info
 
 def read_battery():
     dev = None
@@ -186,8 +197,8 @@ def main():
                         f_out.write(f"{start_bat}%")
     except: pass
     
-    event_path = find_mouse_event_device()
-    last_known_event_path = None # Track to detect reconnection
+    event_path, event_signature = find_mouse_event_device()
+    last_known_signature = None # Track to detect reconnection
     event_file = None
     
     print(f"Monitoring started. Mouse event device: {event_path}")
@@ -227,10 +238,18 @@ def main():
                     try: event_file.close()
                     except: pass
                 event_file = None
-                event_path = find_mouse_event_device() # Try to find again
+                event_path, event_signature = find_mouse_event_device() # Try to find again
+                if event_path is None:
+                    last_known_signature = None
         else:
             # Device not found, try to find it
-            event_path = find_mouse_event_device()
+            if event_file:
+                try: event_file.close()
+                except: pass
+                event_file = None
+            event_path, event_signature = find_mouse_event_device()
+            if event_path is None:
+                last_known_signature = None
             last_activity_time = current_time # Assume active to avoid immediate sleep logic issues
 
         # 2. Calculate Idle Time
@@ -241,11 +260,11 @@ def main():
         
         # Logic:
         # A. Startup or New Connection -> Force Read Immediately
-        if (last_read_time == 0) or (event_path and (event_path != last_known_event_path)):
-            print(f"New connection detected or startup. Event path: {event_path}")
+        if (last_read_time == 0) or (event_path and event_signature and (event_signature != last_known_signature)):
+            print(f"New connection detected or startup. Event path: {event_path} (signature={event_signature})")
             should_read = True
-            if event_path:
-                last_known_event_path = event_path
+            if event_signature:
+                last_known_signature = event_signature
             
         # B. Light Sleep (Idle > 30s) AND (Not read recently) -> READ (Best time!)
         elif (idle_time > IDLE_THRESHOLD_LIGHT) and (idle_time < IDLE_THRESHOLD_DEEP):
